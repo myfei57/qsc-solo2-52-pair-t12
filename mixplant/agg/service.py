@@ -96,17 +96,25 @@ class AggService(PlantService):
         mapping = self.recipes.mapping
         material = self._material_of(bin_name, mapping.assignments)
         target = self._target_for(bin_name)
+        threshold = self.context.threshold_registry.require_revision(
+            "scale_deviation", self.context.clock.now()
+        )
         reading = weigh(
             bin_name=bin_name,
             material=material,
             target_kg=target,
             actual_kg=self._calibration.apply(actual_kg) * self._scale_factor(),
-            tolerance_percent=self.context.config.limits.scale_tolerance_percent,
+            tolerance_percent=threshold.limit,
+            category=threshold.category,
+            version=threshold.version,
+            published_tick=threshold.published_tick,
+            effective_tick=threshold.effective_tick,
+            effective_policy=threshold.effective_policy,
         )
-        self.publish(WEIGH_KIND, {**reading.describe(), "version": self.recipes.current_version()})
+        record = self.publish(WEIGH_KIND, {**reading.describe(), "version": self.recipes.current_version()})
         if self.machine.is_at(BatchPhase.RECIPE_SELECTED.value):
             self.advance(BatchPhase.WEIGHING.value, "aggregate weighed against the selected recipe")
-        self.emit("agg.weighed", reading.describe())
+        self.emit("agg.weighed", {**reading.describe(), "seq": record.seq})
         if not reading.ok:
             self.raise_alarm("agg.weigh_out_of_tolerance", reading.describe())
         return {"weighing": reading.describe(), "targets": self._targets()}
@@ -121,20 +129,23 @@ class AggService(PlantService):
             {
                 "active": True,
                 "version": self.recipes.current_version(),
-                "material": reading.material,
-                "actual_kg": reading.actual_kg,
+                **reading.describe(),
             },
+        )
+        report = weight_report(
+            reading,
+            batch_id=self._batch_id(),
+            version=self.recipes.current_version(),
+            threshold_version=reading.version,
         )
         self.publish(
             REPORT_KIND,
             {
                 "active": True,
-                **weight_report(reading, batch_id=self._batch_id(), version=self.recipes.current_version()),
+                **report,
             },
         )
-        self._reports.append(
-            weight_report(reading, batch_id=self._batch_id(), version=self.recipes.current_version())
-        )
+        self._reports.append(report)
         if self.machine.is_at(BatchPhase.WEIGHING.value):
             self.advance(BatchPhase.WEIGHED.value, "weight is durable")
         self.emit("agg.persisted", {"seq": record.seq, "version": self.recipes.current_version()})
@@ -145,14 +156,22 @@ class AggService(PlantService):
 
         self.require("agg.check")
         plan = self._plan()
+        threshold = self.context.threshold_registry.require_revision(
+            "scale_deviation", self.context.clock.now()
+        )
         verdict = check_dry_weight(
             materials=plan.materials,
             actual_kg=actual_total_kg,
-            tolerance_percent=self.context.config.limits.scale_tolerance_percent,
+            tolerance_percent=threshold.limit,
             exclude=("water",),
+            category=threshold.category,
+            version=threshold.version,
+            published_tick=threshold.published_tick,
+            effective_tick=threshold.effective_tick,
+            effective_policy=threshold.effective_policy,
         )
-        self.publish(CHECK_KIND, {"active": True, **verdict.describe()})
-        self.emit("agg.checked", verdict.describe())
+        check_record = self.publish(CHECK_KIND, {"active": True, **verdict.describe()})
+        self.emit("agg.checked", {**verdict.describe(), "seq": check_record.seq})
         if not verdict.ok:
             self.raise_alarm("agg.dry_weight_out_of_tolerance", verdict.describe())
         return {"check": verdict.describe(), "plan": plan.describe()}
@@ -161,14 +180,22 @@ class AggService(PlantService):
         """Empty the scale hopper before the mixer is stopped."""
 
         self.require("agg.release")
+        threshold = self.context.threshold_registry.require_revision(
+            "hopper_residual", self.context.clock.now()
+        )
         payload = release_payload(
             residual_kg=residual_kg,
-            threshold_kg=self.context.config.limits.hopper_residual_max_kg,
+            threshold_kg=threshold.limit,
+            category=threshold.category,
+            version=threshold.version,
+            published_tick=threshold.published_tick,
+            effective_tick=threshold.effective_tick,
+            effective_policy=threshold.effective_policy,
         )
         state = hopper_state(residual_kg=payload["residual_kg"], released=True)
         self.publish(HOPPER_KIND, {**state.describe(), "threshold_kg": payload["threshold_kg"]})
-        self.publish(RELEASE_KIND, payload)
-        self.emit("agg.hopper_released", payload)
+        release_record = self.publish(RELEASE_KIND, payload)
+        self.emit("agg.hopper_released", {**payload, "seq": release_record.seq})
         return {"release": payload}
 
     def drop(self) -> dict[str, Any]:

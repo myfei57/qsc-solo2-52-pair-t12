@@ -5,8 +5,18 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..config import Limits
-from .batch import scale_out
 from .release import describe_release
+
+
+def _scale_reading(weight: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the recorded weighing without recomputing its verdict."""
+
+    if not weight:
+        return {"weighed": False, "ok": None, "deviation_percent": None, "tolerance_percent": None}
+    reading = dict(weight)
+    reading["weighed"] = True
+    reading.setdefault("tolerance_percent", reading.get("limit"))
+    return reading
 
 
 def compose_status(state: Mapping[str, Any], *, now: int, limits: Limits) -> dict[str, Any]:
@@ -22,7 +32,7 @@ def compose_status(state: Mapping[str, Any], *, now: int, limits: Limits) -> dic
     check = agg.get("check") if isinstance(agg.get("check"), Mapping) else None
     return {
         "now": now,
-        "weigh": scale_out(weight, limits.scale_tolerance_percent),
+        "weigh": _scale_reading(weight),
         "persisted": persist is not None,
         "persisted_version": None if persist is None else persist.get("version"),
         "dropped": drop is not None,
@@ -31,5 +41,5 @@ def compose_status(state: Mapping[str, Any], *, now: int, limits: Limits) -> dic
         "check": None if check is None else dict(check),
         "release": describe_release(agg.get("release")),
         "hopper_residual_kg": None if hopper is None else hopper.get("residual_kg"),
-        "tolerance_percent": limits.scale_tolerance_percent,
+        "tolerance_percent": None if weight is None else weight.get("tolerance_percent", weight.get("limit")),
     }

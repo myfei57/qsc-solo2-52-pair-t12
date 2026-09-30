@@ -10,7 +10,7 @@ from ..recipe.plan import plan_batch
 from ..service_base import PlantService
 from ..statemachine.machine import SequenceMachine
 from .comp import Compensation, compensate, water_offset
-from .mode import mode_for
+from .mode import classify_moisture
 from .table import MoistureTable
 
 COMP_KIND = "moist.comp"
@@ -42,20 +42,35 @@ class MoistService(PlantService):
         self.require_order(quantity > 0, "a compensation needs a positive batch size", quantity=quantity)
         recipe = self.book.selected()
         correction = compensate(material, recipe.factor(material) * quantity, moisture_percent)
-        mode = mode_for(moisture_percent, self.context.config.limits)
+        threshold = self.context.threshold_registry.require_revision(
+            "moisture", self.context.clock.now()
+        )
+        classification = classify_moisture(moisture_percent, threshold.threshold())
         self._compensations.append(correction)
-        self.publish(
+        mode_record = self.publish(
             MODE_KIND,
-            {"active": True, "mode": str(mode.value), "material": material, "percent": moisture_percent},
+            {
+                "active": True,
+                "material": material,
+                **classification.describe(),
+            },
         )
         record = self.publish(
             COMP_KIND,
             {"active": True, **correction.describe(), "batch_quantity": quantity, "version": recipe.version},
         )
-        self.emit("moist.compensated", {"material": material, "free_water_l": correction.free_water_l})
+        self.emit(
+            "moist.compensated",
+            {
+                **classification.describe(),
+                "material": material,
+                "free_water_l": correction.free_water_l,
+                "seq": mode_record.seq,
+            },
+        )
         return {
             "compensation": correction.describe(),
-            "mode": str(mode.value),
+            "mode": str(classification.mode.value),
             "table_reference": self.table.reference(material),
             "seq": record.seq,
         }

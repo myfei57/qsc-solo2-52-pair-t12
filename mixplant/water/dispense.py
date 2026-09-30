@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..decision.thresholds import ThresholdSet
+from ..decision.thresholds import ThresholdSet, Verdict
 from ..errors import ValidationError
 
 
@@ -15,16 +15,22 @@ class DispenseReading:
 
     litres: float
     rate_lps: float
-    ok: bool
-    code: str
+    verdict: Verdict
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict.ok
+
+    @property
+    def code(self) -> str:
+        return self.verdict.code
 
     def describe(self) -> dict[str, Any]:
         return {
             "active": True,
             "litres": self.litres,
             "rate_lps": self.rate_lps,
-            "ok": self.ok,
-            "code": self.code,
+            **self.verdict.describe(),
         }
 
 
@@ -34,4 +40,4 @@ def dispense_reading(*, thresholds: ThresholdSet, litres: float, rate_lps: float
     if litres <= 0:
         raise ValidationError("a dispense needs a positive volume", litres=litres)
     verdict = thresholds.evaluate("water_flow", rate_lps)
-    return DispenseReading(litres=round(litres, 4), rate_lps=round(rate_lps, 4), ok=verdict.ok, code=verdict.code)
+    return DispenseReading(litres=round(litres, 4), rate_lps=round(rate_lps, 4), verdict=verdict)

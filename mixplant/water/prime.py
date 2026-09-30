@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..decision.thresholds import ThresholdSet
+from ..decision.thresholds import ThresholdSet, Verdict
 from ..errors import ValidationError
 
 
@@ -14,11 +14,18 @@ class PrimeReading:
     """How much priming water was confirmed for the delivery line."""
 
     litres: float
-    ok: bool
-    code: str
+    verdict: Verdict
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict.ok
+
+    @property
+    def code(self) -> str:
+        return self.verdict.code
 
     def describe(self) -> dict[str, Any]:
-        return {"active": True, "litres": self.litres, "ok": self.ok, "code": self.code}
+        return {"active": True, "litres": self.litres, **self.verdict.describe()}
 
 
 def prime_reading(*, thresholds: ThresholdSet, litres: float) -> PrimeReading:
@@ -27,4 +34,4 @@ def prime_reading(*, thresholds: ThresholdSet, litres: float) -> PrimeReading:
     if litres < 0:
         raise ValidationError("priming volume must not be negative", litres=litres)
     verdict = thresholds.evaluate("prime_water", litres)
-    return PrimeReading(litres=round(litres, 4), ok=verdict.ok, code=verdict.code)
+    return PrimeReading(litres=round(litres, 4), verdict=verdict)

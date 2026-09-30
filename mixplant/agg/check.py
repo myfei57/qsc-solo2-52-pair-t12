@@ -18,14 +18,28 @@ class DryWeightCheck:
     deviation_percent: float
     tolerance_percent: float
     ok: bool
+    code: str
+    category: str
+    version: int
+    published_tick: int
+    effective_tick: int
+    effective_policy: str
 
     def describe(self) -> dict[str, Any]:
         return {
+            "name": "scale_deviation",
             "planned_kg": self.planned_kg,
             "actual_kg": self.actual_kg,
             "deviation_percent": self.deviation_percent,
             "tolerance_percent": self.tolerance_percent,
             "ok": self.ok,
+            "code": self.code,
+            "limit": self.tolerance_percent,
+            "category": self.category,
+            "threshold_version": self.version,
+            "published_tick": self.published_tick,
+            "effective_tick": self.effective_tick,
+            "effective_policy": self.effective_policy,
         }
 
 
@@ -41,6 +55,11 @@ def check_dry_weight(
     actual_kg: float,
     tolerance_percent: float,
     exclude: tuple[str, ...] = (),
+    category: str = "quality",
+    version: int = 1,
+    published_tick: int = 0,
+    effective_tick: int = 0,
+    effective_policy: str = "next_day",
 ) -> DryWeightCheck:
     """Compare the planned dry total with the reported total."""
 
@@ -48,10 +67,17 @@ def check_dry_weight(
     if planned <= 0:
         raise ValidationError("dry weight check needs a positive planned total", planned_kg=planned)
     deviation = deviation_percent(actual_kg, planned)
+    ok = within_tolerance(deviation, tolerance_percent)
     return DryWeightCheck(
         planned_kg=planned,
         actual_kg=round(actual_kg, 4),
         deviation_percent=deviation,
         tolerance_percent=tolerance_percent,
-        ok=within_tolerance(deviation, tolerance_percent),
+        ok=ok,
+        code="ok" if ok else "over_limit",
+        category=category,
+        version=version,
+        published_tick=published_tick,
+        effective_tick=effective_tick,
+        effective_policy=effective_policy,
     )

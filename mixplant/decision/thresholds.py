@@ -23,6 +23,12 @@ class Verdict:
     direction: str
     ok: bool
     code: str
+    category: str = ""
+    version: int = 1
+    published_tick: int = 0
+    effective_tick: int = 0
+    effective_policy: str = ""
+    effective_seq: int = 0
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -32,6 +38,12 @@ class Verdict:
             "direction": self.direction,
             "ok": self.ok,
             "code": self.code,
+            "category": self.category,
+            "threshold_version": self.version,
+            "published_tick": self.published_tick,
+            "effective_tick": self.effective_tick,
+            "effective_policy": self.effective_policy,
+            "effective_seq": self.effective_seq,
         }
 
 
@@ -43,6 +55,13 @@ class Threshold:
     limit: float
     direction: str = MAX
     unit: str = ""
+    category: str = ""
+    version: int = 1
+    published_tick: int = 0
+    effective_tick: int = 0
+    effective_policy: str = ""
+    effective_seq: int = 0
+    migration: bool = False
 
     def __post_init__(self) -> None:
         if self.direction not in DIRECTIONS:
@@ -64,6 +83,12 @@ class Threshold:
             direction=self.direction,
             ok=ok,
             code=code,
+            category=self.category,
+            version=self.version,
+            published_tick=self.published_tick,
+            effective_tick=self.effective_tick,
+            effective_policy=self.effective_policy,
+            effective_seq=self.effective_seq,
         )
 
     def require(self, reading: float) -> Verdict:
@@ -89,7 +114,19 @@ class Threshold:
         )
 
     def describe(self) -> dict[str, Any]:
-        return {"name": self.name, "limit": self.limit, "direction": self.direction, "unit": self.unit}
+        return {
+            "name": self.name,
+            "limit": self.limit,
+            "direction": self.direction,
+            "unit": self.unit,
+            "category": self.category,
+            "version": self.version,
+            "published_tick": self.published_tick,
+            "effective_tick": self.effective_tick,
+            "effective_policy": self.effective_policy,
+            "effective_seq": self.effective_seq,
+            "migration": self.migration,
+        }
 
 
 class ThresholdSet:
@@ -105,13 +142,19 @@ class ThresholdSet:
         """Build the standard bound set from the configured limits."""
 
         entries = {
-            "moisture": Threshold("moisture", limits.moisture_max_percent, MAX, "%"),
-            "scale_deviation": Threshold("scale_deviation", limits.scale_tolerance_percent, MAX, "%"),
-            "cement_flow": Threshold("cement_flow", limits.cement_flow_max_kgs, MAX, "kg/s"),
-            "water_flow": Threshold("water_flow", limits.water_flow_max_lps, MAX, "L/s"),
-            "hopper_residual": Threshold("hopper_residual", limits.hopper_residual_max_kg, MAX, "kg"),
-            "pump_pressure": Threshold("pump_pressure", limits.pump_pressure_max_mpa, MAX, "MPa"),
-            "prime_water": Threshold("prime_water", limits.prime_water_min_l, MIN, "L"),
+            "moisture": Threshold("moisture", limits.moisture_max_percent, MAX, "%", "quality"),
+            "scale_deviation": Threshold(
+                "scale_deviation", limits.scale_tolerance_percent, MAX, "%", "quality"
+            ),
+            "cement_flow": Threshold("cement_flow", limits.cement_flow_max_kgs, MAX, "kg/s", "safety"),
+            "water_flow": Threshold("water_flow", limits.water_flow_max_lps, MAX, "L/s", "safety"),
+            "hopper_residual": Threshold(
+                "hopper_residual", limits.hopper_residual_max_kg, MAX, "kg", "safety"
+            ),
+            "pump_pressure": Threshold(
+                "pump_pressure", limits.pump_pressure_max_mpa, MAX, "MPa", "safety"
+            ),
+            "prime_water": Threshold("prime_water", limits.prime_water_min_l, MIN, "L", "safety"),
         }
         return cls(entries)
 

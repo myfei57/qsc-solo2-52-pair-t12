@@ -42,14 +42,20 @@ class WaterService(PlantService):
         """Meter batching water into the mixer; it must reach the mixer first."""
 
         self.require("water.dispense")
-        reading = dispense_reading(thresholds=self.context.thresholds, litres=litres, rate_lps=rate_lps)
+        reading = dispense_reading(
+            thresholds=self.context.threshold_registry.active_set(self.context.clock.now()),
+            litres=litres,
+            rate_lps=rate_lps,
+        )
         self._level_l = round(self._level_l - litres, 4)
-        self.publish(DISPENSE_KIND, reading.describe())
+        dispense_record = self.publish(DISPENSE_KIND, reading.describe())
         self.publish(TANK_KIND, tank_state("tank-1", self._level_l).describe())
         self.publish(VALVE_KIND, valve_state(open=False, target_l=litres).describe())
         if not reading.ok:
             self.raise_alarm("water.flow_over_limit", reading.describe())
-        self.emit("water.dispensed", {"litres": reading.litres})
+        self.emit(
+            "water.dispensed", {**reading.describe(), "seq": dispense_record.seq}
+        )
         if self.machine.is_at(MixPhase.IDLE.value):
             self.advance(MixPhase.WATER_IN.value, "water reached the mixer before the binder")
         return {"dispense": reading.describe(), "tank_l": self._level_l}
@@ -57,11 +63,14 @@ class WaterService(PlantService):
     def prime(self, *, litres: float) -> dict[str, Any]:
         """Confirm the prime water the pump needs before it starts."""
 
-        reading = prime_reading(thresholds=self.context.thresholds, litres=litres)
+        reading = prime_reading(
+            thresholds=self.context.threshold_registry.active_set(self.context.clock.now()),
+            litres=litres,
+        )
         if not reading.ok:
             self.raise_alarm("water.prime_insufficient", reading.describe())
-        self.publish(PRIME_KIND, reading.describe())
-        self.emit("water.primed", {"litres": reading.litres})
+        prime_record = self.publish(PRIME_KIND, reading.describe())
+        self.emit("water.primed", {**reading.describe(), "seq": prime_record.seq})
         return {"prime": reading.describe()}
 
     def tank(self) -> dict[str, Any]:

@@ -15,6 +15,12 @@ from .decision.batch import BatchRegistry
 from .decision.query import query_from_params, run_query
 from .decision.stateview import StateView
 from .decision.thresholds import ThresholdSet
+from .decision.limit_catalog import (
+    THRESHOLD_NAMES,
+    ThresholdRegistry,
+    revision_from_payload,
+    revision_payload,
+)
 from .errors import NotFoundError
 from .event.bus import Event, EventBus
 from .event.subscribers import AlarmCollector, AuditSubscriber
@@ -51,6 +57,7 @@ BATCH_KIND = "agg.batch"
 TIMER_KIND = "mix.timer"
 LATCH_KIND = "sampler.latch"
 COMP_KIND = "moist.comp"
+THRESHOLD_KIND = "threshold.revision"
 SELECTED_KIND = "recipe.selected"
 PUBLISHED_KIND = "recipe.published"
 
@@ -77,7 +84,12 @@ class PlantRuntime:
         else:
             self.store = RecordRepository.open(self.config.data_dir, self.clock, self.ids)
         self.versions = VersionedArtifacts.fresh(self.ids)
-        self.thresholds = ThresholdSet.from_limits(self.config.limits)
+        self.threshold_registry = ThresholdRegistry.from_limits(
+            self.config.limits,
+            day_ticks=self.config.defaults.quality_day_ticks,
+            now=0,
+        )
+        self.thresholds = self.threshold_registry.active_set(0)
         self.view = StateView(self.store)
         self.batches = BatchRegistry()
         self.engine = build_engine()
@@ -94,6 +106,7 @@ class PlantRuntime:
             bus=self.bus,
             clock=self.clock,
             config=self.config,
+            threshold_registry=self.threshold_registry,
             thresholds=self.thresholds,
             view=self.view,
             batches=self.batches,
@@ -141,11 +154,13 @@ class PlantRuntime:
         """Rebuild every derived artifact from the stored stream."""
 
         self._restore_clock()
+        self._restore_thresholds()
         report = self.store.restore(self.clock.now())
         self.boot_report = report
         self._restore_id_counters()
         self._adopt_records()
         self._hydrate_machines()
+        self._migrate_thresholds()
         self.store.publish(
             BOOT_KIND,
             "console",
@@ -166,6 +181,22 @@ class PlantRuntime:
         if peak > self.clock.now():
             self.clock.advance(peak - self.clock.now())
         return peak
+
+    def _restore_thresholds(self) -> None:
+        """Rebuild immutable threshold revisions before state replay."""
+
+        registry = ThresholdRegistry(day_ticks=self.config.defaults.quality_day_ticks)
+        revisions = [record for record in self.store.visible() if record.kind == THRESHOLD_KIND]
+        for record in revisions:
+            registry.adopt(revision_from_payload(record.payload), published_tick=record.tick)
+        if not revisions:
+            from .decision.limit_catalog import baseline_revisions
+
+            registry.adopt_many(baseline_revisions(self.config.limits))
+        self.threshold_registry = registry
+        self.thresholds = registry.active_set(self.clock.now())
+        self.context.use_threshold_registry(registry)
+        self.context.use_thresholds(self.thresholds)
 
     def _restore_id_counters(self) -> None:
         """Raise the identifier counters so a restart cannot reuse an id."""
@@ -241,6 +272,24 @@ class PlantRuntime:
                 tick=record.tick,
             )
 
+    def _migrate_thresholds(self) -> None:
+        """Persist the configured v1 catalog once, as a version migration."""
+
+        if any(record.kind == THRESHOLD_KIND for record in self.store.visible()):
+            return
+        for name in THRESHOLD_NAMES:
+            revision = self.threshold_registry.require_revision(name, self.clock.now())
+            self.store.publish(THRESHOLD_KIND, "migration", revision.version, revision_payload(revision))
+        self.bus.publish(
+            Event(
+                topic=STORE,
+                name="threshold.revisions_migrated",
+                origin="migration",
+                tick=self.clock.now(),
+                payload={"versions": {name: 1 for name in THRESHOLD_NAMES}},
+            )
+        )
+
     def health(self) -> dict[str, Any]:
         """Return the values a health probe needs."""
 
@@ -261,6 +310,7 @@ class PlantRuntime:
         """Return the full console snapshot."""
 
         now = self.clock.now()
+        cursor_tick, cursor_seq = self.threshold_registry.active_cursor(now)
         return compose_plant_status(
             station=self.config.station,
             now=now,
@@ -276,7 +326,7 @@ class PlantRuntime:
                 for line, machine in self.machines.items()
             },
             versioned=self.versions.describe(now),
-            thresholds=self.thresholds.describe(),
+            thresholds=self.threshold_registry.describe(cursor_tick, cursor_seq),
             interlocks={
                 "actions": list(self.engine.actions()),
                 "rules": [rule.describe() for rule in self.engine.rules()],
@@ -293,13 +343,40 @@ class PlantRuntime:
         query = query_from_params(params or {})
         return run_query(self.store.committed_records(), query).describe()
 
-    def history(self, tick: int) -> dict[str, Any]:
+    def explain_record(self, seq: int) -> dict[str, Any]:
+        """Re-check one stored judgement against the exact version it records."""
+
+        record = self.store.require_durable(seq, action="threshold.explain")
+        if record.is_tombstone:
+            return {"seq": seq, "kind": record.kind, "verdict": False, "matches": None}
+        payload = record.payload
+        if record.kind == "audit.event":
+            detail = payload.get("detail")
+            if not isinstance(detail, Mapping):
+                return {"seq": seq, "kind": record.kind, "verdict": False, "matches": None}
+            payload = detail
+        threshold_name = payload.get("name")
+        if threshold_name not in THRESHOLD_NAMES or "code" not in payload:
+            return {"seq": seq, "kind": record.kind, "verdict": False, "matches": None}
+        body = dict(payload)
+        body.setdefault("tick", record.tick)
+        body.setdefault("seq", record.seq)
+        return {
+            "seq": seq,
+            "kind": record.kind,
+            "verdict": True,
+            "check": self.threshold_registry.verify_payload(body, tick=record.tick),
+        }
+
+    def history(self, tick: int, seq: int | None = None) -> dict[str, Any]:
         """Compare the current state with the state at ``tick``."""
 
         return {
             "tick": tick,
+            "seq": seq,
             "now": self.clock.now(),
             "state": self.view.as_of(tick),
+            "thresholds": self.threshold_registry.describe(tick, seq),
             "delta": self.view.delta(tick).describe(),
         }
 
@@ -331,6 +408,31 @@ class PlantRuntime:
             )
         )
         return {"baseline": baseline.describe(self.clock.now()), "seq": record.seq}
+
+    def publish_threshold(self, name: str, limit: float) -> dict[str, Any]:
+        """Publish a threshold value under its category's fixed effective policy."""
+
+        seq = self.store.last_seq() + 1
+        revision = self.threshold_registry.draft(name, limit, tick=self.clock.now(), seq=seq)
+        record = self.store.publish(
+            THRESHOLD_KIND,
+            "console",
+            revision.version,
+            revision_payload(revision),
+        )
+        self.threshold_registry.adopt(revision, published_tick=self.clock.now())
+        self.context.use_thresholds(self.threshold_registry.active_set(self.clock.now()))
+        self.thresholds = self.context.thresholds
+        self.bus.publish(
+            Event(
+                topic=STORE,
+                name="threshold.published",
+                origin="console",
+                tick=self.clock.now(),
+                payload=revision.describe(),
+            )
+        )
+        return {"threshold": revision.describe(), "seq": record.seq}
 
     def confirm(self, subject: str, *, ttl_ticks: int | None = None) -> dict[str, Any]:
         """Record a fresh confirmation for ``subject``."""
@@ -373,6 +475,8 @@ class PlantRuntime:
         """Move the deterministic clock forward and record where it went."""
 
         moved = self.clock.advance(ticks)
+        self.context.use_thresholds(self.threshold_registry.active_set(moved))
+        self.thresholds = self.context.thresholds
         self.store.publish(CLOCK_KIND, "console", 0, {"active": True, "tick": moved})
         return moved
 
@@ -469,6 +573,12 @@ class PlantRuntime:
                 optional_text(payload, "unit", ""),
                 ttl_ticks=optional_integer(payload, "ttl_ticks", self.config.defaults.baseline_ttl_ticks),
             ),
+            "threshold.publish": lambda payload: self.publish_threshold(
+                text(payload, "name"), self._threshold_value(payload)
+            ),
+            "limit.publish": lambda payload: self.publish_threshold(
+                text(payload, "name"), self._threshold_value(payload)
+            ),
             "confirmation.take": lambda payload: self.confirm(
                 text(payload, "subject"),
                 ttl_ticks=optional_integer(payload, "ttl_ticks", self.config.defaults.confirmation_ttl_ticks),
@@ -479,6 +589,7 @@ class PlantRuntime:
             "store.rollback": lambda payload: self.rollback(
                 integer(payload, "seq"), reason=optional_text(payload, "reason", "operator rollback")
             ),
+            "threshold.explain": lambda payload: self.explain_record(integer(payload, "seq")),
             "clock.advance": lambda payload: {"tick": self.advance_ticks(integer(payload, "ticks"))},
         }
 
@@ -523,6 +634,10 @@ class PlantRuntime:
             if value not in (None, ""):
                 factors[material] = float(value)
         return factors
+
+    @staticmethod
+    def _threshold_value(payload: Mapping[str, Any]) -> float:
+        return number(payload, "limit" if "limit" in payload else "value")
 
     @staticmethod
     def _detail(payload: Mapping[str, Any]) -> dict[str, Any]:

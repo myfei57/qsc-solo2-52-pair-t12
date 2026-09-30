@@ -11,6 +11,9 @@ COMMANDS = (
     ("POST", "/api/audit/note", "audit.note"),
     ("POST", "/api/audit/rollup", "audit.rollup"),
     ("POST", "/api/baseline", "baseline.publish"),
+    ("POST", "/api/threshold", "threshold.publish"),
+    ("POST", "/api/limit", "limit.publish"),
+    ("POST", "/api/verdict/explain", "threshold.explain"),
     ("POST", "/api/confirmation", "confirmation.take"),
 )
 

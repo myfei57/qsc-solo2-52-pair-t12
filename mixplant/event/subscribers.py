@@ -28,7 +28,13 @@ class AuditSubscriber:
             AUDIT_KIND,
             event.origin,
             int(event.payload.get("generation", 0) or 0),
-            {"topic": event.topic, "name": event.name, "origin": event.origin, "tick": event.tick},
+            {
+                "topic": event.topic,
+                "name": event.name,
+                "origin": event.origin,
+                "tick": event.tick,
+                "detail": dict(event.payload),
+            },
         )
         self._seen += 1
 

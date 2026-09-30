@@ -7,7 +7,9 @@ from typing import Any, Mapping
 from .weigh import WeightReading
 
 
-def weight_report(reading: WeightReading, *, batch_id: str, version: int) -> dict[str, Any]:
+def weight_report(
+    reading: WeightReading, *, batch_id: str, version: int, threshold_version: int | None = None
+) -> dict[str, Any]:
     """Build the audit report for one weighing."""
 
     return {
@@ -18,6 +20,13 @@ def weight_report(reading: WeightReading, *, batch_id: str, version: int) -> dic
         "actual_kg": reading.actual_kg,
         "deviation_percent": reading.deviation_percent,
         "ok": reading.ok,
+        "code": reading.code,
+        "limit": reading.limit,
+        "category": reading.category,
+        "threshold_version": reading.version,
+        "published_tick": reading.published_tick,
+        "effective_tick": reading.effective_tick,
+        "effective_policy": reading.effective_policy,
     }
 
 

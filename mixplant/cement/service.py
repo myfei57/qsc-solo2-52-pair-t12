@@ -50,18 +50,18 @@ class CementService(PlantService):
         self.require("cement.feed")
         state = gate_state(open=False, silo=silo, target_kg=mass_kg)
         reading = flow_reading(
-            thresholds=self.context.thresholds,
+            thresholds=self.context.threshold_registry.active_set(self.context.clock.now()),
             silo=silo,
             rate_kgs=rate_kgs,
             mass_kg=mass_kg,
         )
         level = self.ledger.draw(silo, mass_kg)
-        self.publish(FLOW_KIND, reading.describe())
+        flow_record = self.publish(FLOW_KIND, reading.describe())
         self.publish(GATE_KIND, state.describe())
         self.publish(SILO_KIND, {"active": True, "silo": silo, "material": "cement", "level_kg": level})
         if not reading.ok:
             self.raise_alarm("cement.flow_over_limit", reading.describe())
-        self.emit("cement.fed", {"silo": silo, "mass_kg": reading.mass_kg})
+        self.emit("cement.fed", {**reading.describe(), "seq": flow_record.seq})
         if self.machine.is_at(MixPhase.WATER_IN.value):
             self.advance(MixPhase.CEMENT_IN.value, "binder washed in after the water")
         return {"flow": reading.describe(), "level_kg": level, "inventory": self.ledger.levels().describe()}

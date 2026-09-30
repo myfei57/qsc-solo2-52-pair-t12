@@ -31,7 +31,9 @@ class PumpService(PlantService):
         self.require("pump.start")
         prime = self.payload_entry("water", "prime")
         primed_l = float(prime.get("litres", 0.0)) if prime else 0.0
-        require_primed(primed_l=primed_l, minimum_l=self.context.config.limits.prime_water_min_l)
+        thresholds = self.context.threshold_registry.active_set(self.context.clock.now())
+        minimum = thresholds.get("prime_water").limit
+        require_primed(primed_l=primed_l, minimum_l=minimum)
         self.run.start()
         payload = start_payload(primed_l=primed_l, stroke_l=self.stroke_l)
         self.publish(RUN_KIND, payload)
@@ -62,11 +64,14 @@ class PumpService(PlantService):
     def observe_pressure(self, *, reading_mpa: float) -> dict[str, Any]:
         """Record a delivery pressure reading."""
 
-        reading = pressure_reading(thresholds=self.context.thresholds, reading_mpa=reading_mpa)
-        self.publish(PRESSURE_KIND, reading.describe())
+        reading = pressure_reading(
+            thresholds=self.context.threshold_registry.active_set(self.context.clock.now()),
+            reading_mpa=reading_mpa,
+        )
+        pressure_record = self.publish(PRESSURE_KIND, reading.describe())
         if not reading.ok:
             self.raise_alarm("pump.pressure_over_limit", reading.describe())
-        self.emit("pump.pressure", reading.describe())
+        self.emit("pump.pressure", {**reading.describe(), "seq": pressure_record.seq})
         return {"pressure": reading.describe(), "run": self.run.describe()}
 
     def finish(self) -> dict[str, Any]:

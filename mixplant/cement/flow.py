@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..decision.thresholds import ThresholdSet
+from ..decision.thresholds import ThresholdSet, Verdict
 from ..errors import ValidationError
 
 
@@ -16,8 +16,15 @@ class FlowReading:
     silo: str
     rate_kgs: float
     mass_kg: float
-    ok: bool
-    code: str
+    verdict: Verdict
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict.ok
+
+    @property
+    def code(self) -> str:
+        return self.verdict.code
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -25,8 +32,7 @@ class FlowReading:
             "silo": self.silo,
             "rate_kgs": self.rate_kgs,
             "mass_kg": self.mass_kg,
-            "ok": self.ok,
-            "code": self.code,
+            **self.verdict.describe(),
         }
 
 
@@ -46,6 +52,5 @@ def flow_reading(
         silo=silo,
         rate_kgs=round(rate_kgs, 4),
         mass_kg=round(mass_kg, 4),
-        ok=verdict.ok,
-        code=verdict.code,
+        verdict=verdict,
     )

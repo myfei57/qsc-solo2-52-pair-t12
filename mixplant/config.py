@@ -42,6 +42,7 @@ class ValidityDefaults:
     baseline_ttl_ticks: int = 32
     confirmation_ttl_ticks: int = 10
     snapshot_ttl_ticks: int = 64
+    quality_day_ticks: int = 24
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,4 +95,10 @@ class StationConfig:
             "port": self.port,
             "data_dir": str(self.data_dir),
             "limits": self.limits.as_mapping(),
+            "defaults": {
+                "baseline_ttl_ticks": self.defaults.baseline_ttl_ticks,
+                "confirmation_ttl_ticks": self.defaults.confirmation_ttl_ticks,
+                "snapshot_ttl_ticks": self.defaults.snapshot_ttl_ticks,
+                "quality_day_ticks": self.defaults.quality_day_ticks,
+            },
         }
