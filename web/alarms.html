@@ -19,8 +19,13 @@
   <form id="note"><input name="name" value="shift.note"><input name="detail" value="checked"><button type="submit">note</button></form>
   <form id="rollup"><button type="submit">production roll-up</button></form>
   <form id="baseline"><input name="name" value="scale.factor"><input name="value" value="1.002"><input name="unit" value="x"><button type="submit">publish baseline</button></form>
+  <form id="limit">
+    <input name="category" value="pump_pressure"><input name="value" value="8">
+    <button type="submit">publish limit revision</button>
+  </form>
+  <table id="limits"><thead><tr><th>category</th><th>revision</th><th>limit</th><th>activation</th><th>effective tick</th><th>in force</th></tr></thead><tbody></tbody></table>
   <table id="alarms"><thead><tr><th>name</th><th>origin</th><th>tick</th></tr></thead><tbody></tbody></table>
-  <table id="audit"><thead><tr><th>name</th><th>origin</th><th>tick</th></tr></thead><tbody></tbody></table>
+  <table id="audit"><thead><tr><th>name</th><th>origin</th><th>tick</th><th>detail</th></tr></thead><tbody></tbody></table>
   <script id="plant-state" type="application/json"><!--STATE--></script>
   <script>
     const state = JSON.parse(document.getElementById('plant-state').textContent || '{"alarms":[],"audit":[]}');
@@ -34,15 +39,22 @@
     const audit = document.querySelector('#audit tbody');
     for (const entry of state.audit) {
       const row = document.createElement('tr');
-      row.innerHTML = `<td>${entry.name}</td><td>${entry.origin}</td><td>${entry.tick}</td>`;
+      row.innerHTML = `<td>${entry.name}</td><td>${entry.origin}</td><td>${entry.tick}</td><td>${JSON.stringify(entry.detail)}</td>`;
       audit.appendChild(row);
+    }
+    const limits = document.querySelector('#limits tbody');
+    const current = (state.limits && state.limits.current) || {};
+    for (const [category, revision] of Object.entries(current)) {
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${category}</td><td>${revision.revision}</td><td>${revision.limit} ${revision.unit}</td><td>${revision.activation}</td><td>${revision.effective_tick}</td><td>${revision.in_force}</td>`;
+      limits.appendChild(row);
     }
     async function post(path, form) {
       const entries = form ? Object.fromEntries(new FormData(form).entries()) : {};
       const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries) });
       return response.json();
     }
-    const routes = { note: '/api/audit/note', rollup: '/api/audit/rollup', baseline: '/api/baseline' };
+    const routes = { note: '/api/audit/note', rollup: '/api/audit/rollup', baseline: '/api/baseline', limit: '/api/limits' };
     for (const [id, path] of Object.entries(routes)) {
       document.getElementById(id).addEventListener('submit', async (event) => { event.preventDefault(); console.log(await post(path, event.target)); location.reload(); });
     }

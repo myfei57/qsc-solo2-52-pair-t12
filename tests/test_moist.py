@@ -24,10 +24,10 @@ def test_percentage_is_validated() -> None:
 
 
 def test_mode_classification() -> None:
-    limits = Limits(moisture_max_percent=9.0)
-    assert mode_for(0.0, limits) is MoistureMode.DRY
-    assert mode_for(4.0, limits) is MoistureMode.WET
-    assert mode_for(9.0, limits) is MoistureMode.SATURATED
+    ceiling = Limits(moisture_max_percent=9.0).moisture_max_percent
+    assert mode_for(0.0, ceiling) is MoistureMode.DRY
+    assert mode_for(4.0, ceiling) is MoistureMode.WET
+    assert mode_for(9.0, ceiling) is MoistureMode.SATURATED
 
 
 def test_table_lookup() -> None:

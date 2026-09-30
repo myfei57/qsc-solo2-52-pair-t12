@@ -12,6 +12,7 @@ COMMANDS = (
     ("POST", "/api/audit/rollup", "audit.rollup"),
     ("POST", "/api/baseline", "baseline.publish"),
     ("POST", "/api/confirmation", "confirmation.take"),
+    ("POST", "/api/limits", "limits.publish"),
 )
 
 

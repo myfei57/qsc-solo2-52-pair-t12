@@ -50,6 +50,7 @@ class PlantController:
             "alarms": self.runtime.alarms.recent(),
             "audit": self.runtime.audit.recent(),
             "counts": self.runtime.audit.counts(),
+            "limits": self.runtime.limit_book.describe(now=self.runtime.clock.now()),
         }
 
     def manifest(self) -> dict[str, Any]:

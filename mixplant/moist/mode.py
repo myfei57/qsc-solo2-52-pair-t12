@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from enum import Enum
 
-from ..config import Limits
-
 
 class MoistureMode(str, Enum):
     """How much free water the aggregate currently carries."""
@@ -15,10 +13,9 @@ class MoistureMode(str, Enum):
     SATURATED = "saturated"
 
 
-def mode_for(percent: float, limits: Limits) -> MoistureMode:
-    """Classify ``percent`` against the configured moisture ceiling."""
+def mode_for(percent: float, ceiling: float) -> MoistureMode:
+    """Classify ``percent`` against the moisture ceiling in force."""
 
-    ceiling = limits.moisture_max_percent
     if percent <= 0.0:
         return MoistureMode.DRY
     if percent >= ceiling:

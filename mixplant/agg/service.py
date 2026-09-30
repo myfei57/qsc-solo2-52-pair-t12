@@ -31,6 +31,7 @@ from .check import check_dry_weight
 from .hopper import hopper_state
 from .release import release_payload
 from .report import summarise_reports, weight_report
+from .scale import deviation_percent
 from .summary import compose_status
 from .weigh import reading_from_payload, weigh
 
@@ -96,12 +97,20 @@ class AggService(PlantService):
         mapping = self.recipes.mapping
         material = self._material_of(bin_name, mapping.assignments)
         target = self._target_for(bin_name)
+        actual = self._calibration.apply(actual_kg) * self._scale_factor()
+        tick = self.context.clock.now()
+        verdict = self.context.limits.evaluate(
+            "scale_deviation",
+            deviation_percent(actual, target),
+            tick=tick,
+        )
         reading = weigh(
             bin_name=bin_name,
             material=material,
             target_kg=target,
-            actual_kg=self._calibration.apply(actual_kg) * self._scale_factor(),
-            tolerance_percent=self.context.config.limits.scale_tolerance_percent,
+            actual_kg=actual,
+            tolerance_percent=verdict.limit,
+            verdict=verdict,
         )
         self.publish(WEIGH_KIND, {**reading.describe(), "version": self.recipes.current_version()})
         if self.machine.is_at(BatchPhase.RECIPE_SELECTED.value):
@@ -109,6 +118,7 @@ class AggService(PlantService):
         self.emit("agg.weighed", reading.describe())
         if not reading.ok:
             self.raise_alarm("agg.weigh_out_of_tolerance", reading.describe())
+        self.audit_verdict("scale_deviation", reading.describe())
         return {"weighing": reading.describe(), "targets": self._targets()}
 
     def persist(self) -> dict[str, Any]:
@@ -145,30 +155,43 @@ class AggService(PlantService):
 
         self.require("agg.check")
         plan = self._plan()
-        verdict = check_dry_weight(
+        dry_materials = {name: mass for name, mass in plan.materials.items() if name not in ("water",)}
+        planned_total = round(sum(dry_materials.values()), 4)
+        deviation = deviation_percent(actual_total_kg, planned_total)
+        verdict = self.context.limits.evaluate(
+            "scale_deviation", deviation, tick=self.context.clock.now()
+        )
+        verdict_check = check_dry_weight(
             materials=plan.materials,
             actual_kg=actual_total_kg,
-            tolerance_percent=self.context.config.limits.scale_tolerance_percent,
+            tolerance_percent=verdict.limit,
             exclude=("water",),
+            verdict=verdict,
         )
-        self.publish(CHECK_KIND, {"active": True, **verdict.describe()})
-        self.emit("agg.checked", verdict.describe())
-        if not verdict.ok:
-            self.raise_alarm("agg.dry_weight_out_of_tolerance", verdict.describe())
-        return {"check": verdict.describe(), "plan": plan.describe()}
+        self.publish(CHECK_KIND, {"active": True, **verdict_check.describe()})
+        self.emit("agg.checked", verdict_check.describe())
+        if not verdict_check.ok:
+            self.raise_alarm("agg.dry_weight_out_of_tolerance", verdict_check.describe())
+        self.audit_verdict("dry_weight", verdict_check.describe())
+        return {"check": verdict_check.describe(), "plan": plan.describe()}
 
     def release(self, *, residual_kg: float) -> dict[str, Any]:
         """Empty the scale hopper before the mixer is stopped."""
 
         self.require("agg.release")
+        verdict = self.context.limits.evaluate(
+            "hopper_residual", residual_kg, tick=self.context.clock.now()
+        )
         payload = release_payload(
             residual_kg=residual_kg,
-            threshold_kg=self.context.config.limits.hopper_residual_max_kg,
+            threshold_kg=verdict.limit,
+            verdict=verdict,
         )
         state = hopper_state(residual_kg=payload["residual_kg"], released=True)
         self.publish(HOPPER_KIND, {**state.describe(), "threshold_kg": payload["threshold_kg"]})
         self.publish(RELEASE_KIND, payload)
         self.emit("agg.hopper_released", payload)
+        self.audit_verdict("hopper_residual", payload)
         return {"release": payload}
 
     def drop(self) -> dict[str, Any]:
@@ -202,8 +225,13 @@ class AggService(PlantService):
         return summarise_reports(tuple(self._reports))
 
     def status(self) -> dict[str, Any]:
+        scale_revision = self.context.limits.current(
+            "scale_deviation", now=self.context.clock.now()
+        )
         summary = compose_status(
-            self.state(), now=self.context.clock.now(), limits=self.context.config.limits
+            self.state(),
+            now=self.context.clock.now(),
+            tolerance_percent=scale_revision.limit,
         )
         summary["reports"] = self.reports()
         return summary

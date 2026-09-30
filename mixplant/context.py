@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .clock import Clock
 from .config import StationConfig
 from .decision.batch import BatchRegistry
+from .decision.limitbook import LimitBook
 from .decision.stateview import StateView
 from .decision.thresholds import ThresholdSet
 from .event.bus import EventBus
@@ -26,6 +27,7 @@ class SharedContext:
     clock: Clock
     config: StationConfig
     thresholds: ThresholdSet
+    limits: LimitBook
     view: StateView
     batches: BatchRegistry
     gate: PreGate

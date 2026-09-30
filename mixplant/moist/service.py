@@ -42,7 +42,10 @@ class MoistService(PlantService):
         self.require_order(quantity > 0, "a compensation needs a positive batch size", quantity=quantity)
         recipe = self.book.selected()
         correction = compensate(material, recipe.factor(material) * quantity, moisture_percent)
-        mode = mode_for(moisture_percent, self.context.config.limits)
+        ceiling = self.context.limits.current(
+            "moisture", now=self.context.clock.now()
+        ).limit
+        mode = mode_for(moisture_percent, ceiling)
         self._compensations.append(correction)
         self.publish(
             MODE_KIND,

@@ -47,6 +47,20 @@ class AuditService(PlantService):
             audit_entry(name=event.name, origin=event.origin, tick=event.tick, detail=dict(event.payload))
         )
 
+    def handle_decision(self, event: Event) -> None:
+        """Copy a versioned verdict event into the ledger.
+
+        The stored detail is the immutable decision row: it names the limit
+        revision and effective tick the reading was judged against, which is
+        what the audit view replays when an old result has to be explained.
+        """
+
+        if not event.name.startswith("decision."):
+            return
+        self.ledger.record(
+            audit_entry(name=event.name, origin=event.origin, tick=event.tick, detail=dict(event.payload))
+        )
+
     def rollup(self) -> dict[str, Any]:
         """Write and return the current production roll-up."""
 

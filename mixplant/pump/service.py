@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from ..errors import OrderViolationError
+from ..decision.thresholds import verdict_from_payload
 from ..service_base import PlantService
 from ..statemachine.phases import DeliveryPhase
 from .pressure import pressure_reading
@@ -31,7 +32,7 @@ class PumpService(PlantService):
         self.require("pump.start")
         prime = self.payload_entry("water", "prime")
         primed_l = float(prime.get("litres", 0.0)) if prime else 0.0
-        require_primed(primed_l=primed_l, minimum_l=self.context.config.limits.prime_water_min_l)
+        require_primed(primed_l=primed_l, minimum_l=self._prime_minimum_l(prime))
         self.run.start()
         payload = start_payload(primed_l=primed_l, stroke_l=self.stroke_l)
         self.publish(RUN_KIND, payload)
@@ -40,6 +41,25 @@ class PumpService(PlantService):
             self.advance(DeliveryPhase.PUMPING.value, "prime confirmed before the pump started")
         self.emit("pump.started", payload)
         return {"start": payload, "run": self.run.describe()}
+
+    def _prime_minimum_l(self, prime: Any) -> float:
+        """Return the floor the recorded prime was judged against.
+
+        The verdict names the exact revision used at the time; a next day
+        limit change therefore cannot change whether a recorded prime still
+        counts.  Only records written before versioning fall back to the
+        limit in force now.
+        """
+
+        if isinstance(prime, Mapping) and isinstance(prime.get("verdict"), Mapping):
+            stored = prime["verdict"]
+            if stored.get("revision") is not None:
+                verdict = verdict_from_payload(stored)
+                if verdict is not None:
+                    return self.context.limits.re_evaluate(verdict).limit
+        return self.context.limits.current(
+            "prime_water", now=self.context.clock.now()
+        ).limit
 
     def prime_confirmed(self) -> dict[str, Any]:
         """Move the delivery line to its primed stage."""
@@ -62,10 +82,15 @@ class PumpService(PlantService):
     def observe_pressure(self, *, reading_mpa: float) -> dict[str, Any]:
         """Record a delivery pressure reading."""
 
-        reading = pressure_reading(thresholds=self.context.thresholds, reading_mpa=reading_mpa)
+        reading = pressure_reading(
+            limits=self.context.limits,
+            reading_mpa=reading_mpa,
+            tick=self.context.clock.now(),
+        )
         self.publish(PRESSURE_KIND, reading.describe())
         if not reading.ok:
             self.raise_alarm("pump.pressure_over_limit", reading.describe())
+        self.audit_verdict("pump_pressure", reading.describe())
         self.emit("pump.pressure", reading.describe())
         return {"pressure": reading.describe(), "run": self.run.describe()}
 

@@ -42,13 +42,19 @@ class WaterService(PlantService):
         """Meter batching water into the mixer; it must reach the mixer first."""
 
         self.require("water.dispense")
-        reading = dispense_reading(thresholds=self.context.thresholds, litres=litres, rate_lps=rate_lps)
+        reading = dispense_reading(
+            limits=self.context.limits,
+            litres=litres,
+            rate_lps=rate_lps,
+            tick=self.context.clock.now(),
+        )
         self._level_l = round(self._level_l - litres, 4)
         self.publish(DISPENSE_KIND, reading.describe())
         self.publish(TANK_KIND, tank_state("tank-1", self._level_l).describe())
         self.publish(VALVE_KIND, valve_state(open=False, target_l=litres).describe())
         if not reading.ok:
             self.raise_alarm("water.flow_over_limit", reading.describe())
+        self.audit_verdict("water_flow", reading.describe())
         self.emit("water.dispensed", {"litres": reading.litres})
         if self.machine.is_at(MixPhase.IDLE.value):
             self.advance(MixPhase.WATER_IN.value, "water reached the mixer before the binder")
@@ -57,9 +63,12 @@ class WaterService(PlantService):
     def prime(self, *, litres: float) -> dict[str, Any]:
         """Confirm the prime water the pump needs before it starts."""
 
-        reading = prime_reading(thresholds=self.context.thresholds, litres=litres)
+        reading = prime_reading(
+            limits=self.context.limits, litres=litres, tick=self.context.clock.now()
+        )
         if not reading.ok:
             self.raise_alarm("water.prime_insufficient", reading.describe())
+        self.audit_verdict("prime_water", reading.describe())
         self.publish(PRIME_KIND, reading.describe())
         self.emit("water.primed", {"litres": reading.litres})
         return {"prime": reading.describe()}

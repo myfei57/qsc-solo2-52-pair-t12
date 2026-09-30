@@ -4,21 +4,31 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..decision.thresholds import Verdict
 from ..errors import ValidationError
 
 
-def release_payload(*, residual_kg: float, threshold_kg: float) -> dict[str, Any]:
+def release_payload(
+    *,
+    residual_kg: float,
+    threshold_kg: float,
+    verdict: Verdict | None = None,
+) -> dict[str, Any]:
     """Build the payload that closes out one batch on the scale."""
 
     if residual_kg < 0:
         raise ValidationError("residual mass must not be negative", residual=residual_kg)
     if threshold_kg < 0:
         raise ValidationError("residual threshold must not be negative", threshold=threshold_kg)
+    clear = residual_kg <= threshold_kg
+    if verdict is not None:
+        clear = verdict.ok
     return {
         "active": True,
         "residual_kg": round(residual_kg, 4),
         "threshold_kg": round(threshold_kg, 4),
-        "clear": residual_kg <= threshold_kg,
+        "clear": clear,
+        "verdict": None if verdict is None else verdict.describe(),
     }
 
 

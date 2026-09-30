@@ -12,9 +12,10 @@ from .clock import ManualClock
 from .config import StationConfig
 from .context import SharedContext
 from .decision.batch import BatchRegistry
+from .decision.limitbook import LIMIT_ACTIVATION, LimitBook, LimitRevision
 from .decision.query import query_from_params, run_query
 from .decision.stateview import StateView
-from .decision.thresholds import ThresholdSet
+from .decision.thresholds import ThresholdSet, limit_catalog, verdict_from_payload
 from .errors import NotFoundError
 from .event.bus import Event, EventBus
 from .event.subscribers import AlarmCollector, AuditSubscriber
@@ -47,6 +48,7 @@ BOOT_KIND = "station.boot"
 CLOCK_KIND = "store.clock"
 BASELINE_KIND = "version.baseline"
 CONFIRMATION_KIND = "version.confirmation"
+LIMIT_KIND = "limits.revision"
 BATCH_KIND = "agg.batch"
 TIMER_KIND = "mix.timer"
 LATCH_KIND = "sampler.latch"
@@ -78,6 +80,10 @@ class PlantRuntime:
             self.store = RecordRepository.open(self.config.data_dir, self.clock, self.ids)
         self.versions = VersionedArtifacts.fresh(self.ids)
         self.thresholds = ThresholdSet.from_limits(self.config.limits)
+        # The book itself is rebuilt from the journal in bootstrap(); it starts
+        # empty so revision records read off the stream do not collide with a
+        # pre-seeded revision one on restart.
+        self.limit_book = LimitBook()
         self.view = StateView(self.store)
         self.batches = BatchRegistry()
         self.engine = build_engine()
@@ -95,6 +101,7 @@ class PlantRuntime:
             clock=self.clock,
             config=self.config,
             thresholds=self.thresholds,
+            limits=self.limit_book,
             view=self.view,
             batches=self.batches,
             gate=self.gate,
@@ -135,6 +142,7 @@ class PlantRuntime:
     def _wire_bus(self) -> None:
         self.bus.subscribe(ALARM, self.alarms)
         self.bus.subscribe(ALARM, self.audit.handle_alarm)
+        self.bus.subscribe_all(self.audit.handle_decision)
         self.bus.subscribe_all(self.audit_subscriber)
 
     def bootstrap(self) -> dict[str, Any]:
@@ -146,6 +154,7 @@ class PlantRuntime:
         self._restore_id_counters()
         self._adopt_records()
         self._hydrate_machines()
+        self._seed_limit_revisions()
         self.store.publish(
             BOOT_KIND,
             "console",
@@ -228,7 +237,58 @@ class PlantRuntime:
                     1,
                     validity=Validity.never(record.tick),
                 )
+            elif record.kind == LIMIT_KIND:
+                self.limit_book.adopt(LimitRevision.from_document(record.payload))
         self.moist.sync(corrections)
+
+    def _seed_limit_revisions(self) -> None:
+        """Establish revision one for every limit category.
+
+        Three situations are handled:
+
+        * the journal already carries limit revisions (a normal restart):
+          nothing is added, the in memory book rebuilt in
+          ``_adopt_records`` already matches the stream;
+        * a fresh journal (first boot): the configured limits are seeded as
+          revision one, published and effective at tick zero;
+        * a journal written before limit versioning existed (migration): the
+          configured limits are adopted as revision one, published at the
+          current tick but effective from tick zero so every historical
+          reading keeps being explained by the bounds that were in force
+          when it happened.
+        """
+
+        revision_records = [
+            record for record in self.store.committed_records() if record.kind == LIMIT_KIND
+        ]
+        if revision_records:
+            return
+        catalog = limit_catalog(self.config.limits)
+        migration = bool(self.store.committed_records())
+        now = self.clock.now()
+        for category, spec in catalog.items():
+            revision = LimitRevision(
+                category=category,
+                revision=1,
+                limit=float(spec["limit"]),
+                direction=str(spec["direction"]),
+                unit=str(spec["unit"]),
+                activation=LIMIT_ACTIVATION[category],
+                published_tick=now if migration else 0,
+                effective_tick=0,
+                backdated=migration,
+            )
+            self.limit_book.adopt(revision)
+            self.store.publish(
+                LIMIT_KIND,
+                "console",
+                0,
+                {
+                    "active": True,
+                    "kind": "migration" if migration else "seed",
+                    **revision.to_document(),
+                },
+            )
 
     def _hydrate_machines(self) -> None:
         for line, machine in self.machines.items():
@@ -277,6 +337,7 @@ class PlantRuntime:
             },
             versioned=self.versions.describe(now),
             thresholds=self.thresholds.describe(),
+            limits=self.limit_book.describe(now=now),
             interlocks={
                 "actions": list(self.engine.actions()),
                 "rules": [rule.describe() for rule in self.engine.rules()],
@@ -332,6 +393,71 @@ class PlantRuntime:
         )
         return {"baseline": baseline.describe(self.clock.now()), "seq": record.seq}
 
+    def publish_limit(self, category: str, value: float) -> dict[str, Any]:
+        """Publish a new revision of one limit category.
+
+        The activation mode belongs to the category, not to the caller:
+        immediate categories take effect at the publish tick, next day
+        categories at the first tick of the next production day.  The new
+        revision only governs readings produced afterwards; stored verdicts
+        keep naming the revision they were originally judged with.
+        """
+
+        now = self.clock.now()
+        revision = self.limit_book.publish(category, value, tick=now)
+        record = self.store.publish(
+            LIMIT_KIND,
+            "console",
+            revision.revision,
+            {"active": True, "kind": "revision", **revision.to_document()},
+        )
+        self.bus.publish(
+            Event(
+                topic=STORE,
+                name="limits.revision_published",
+                origin="console",
+                tick=now,
+                payload=revision.describe(now=now),
+            )
+        )
+        return {
+            "revision": revision.describe(now=now),
+            "current": self.limit_book.current(category, now=now).describe(now=now),
+            "seq": record.seq,
+        }
+
+    def limit_history(self, category: str) -> dict[str, Any]:
+        """Return every revision of one category oldest first."""
+
+        now = self.clock.now()
+        return {
+            "category": category,
+            "revisions": [item.describe(now=now) for item in self.limit_book.history(category)],
+        }
+
+    def explain_verdict(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Re-judge a stored verdict with the exact revision it names.
+
+        This is the single entry point the live console, the replay view and
+        the audit view use to explain an old decision: the version named in
+        the record is loaded from the append only chain and applied, so the
+        result matches what the operator saw on site regardless of later
+        limit changes.
+        """
+
+        verdict = verdict_from_payload(payload)
+        if verdict is None or verdict.revision is None:
+            raise NotFoundError("the record carries no versioned verdict")
+        revision = self.limit_book.revision(verdict.name, verdict.revision)
+        explained = self.limit_book.re_evaluate(verdict)
+        matches = explained.ok == verdict.ok and explained.code == verdict.code
+        return {
+            "recorded": verdict.describe(),
+            "explained": explained.describe(),
+            "revision": revision.describe(),
+            "consistent": matches,
+        }
+
     def confirm(self, subject: str, *, ttl_ticks: int | None = None) -> dict[str, Any]:
         """Record a fresh confirmation for ``subject``."""
 
@@ -362,12 +488,38 @@ class PlantRuntime:
         """Tombstone every committed record after ``seq``."""
 
         records = self.store.rollback_after(seq, reason=reason, origin="console", generation=0)
+        if any(record.tombstone_of for record in records):
+            self._rebuild_limit_book()
         return {
             "tombstones": [
                 {"seq": record.seq, "tombstone_of": record.tombstone_of} for record in records
             ],
             "watermark": self.store.watermark().describe(),
         }
+
+    def _rebuild_limit_book(self) -> None:
+        """Drop the in memory book and fold the surviving stream back into it."""
+
+        book = LimitBook()
+        for record in self.store.visible():
+            if record.kind == LIMIT_KIND:
+                book.adopt(LimitRevision.from_document(record.payload))
+        self.limit_book = book
+        self.context = SharedContext(
+            store=self.store,
+            versions=self.versions,
+            bus=self.bus,
+            clock=self.clock,
+            config=self.config,
+            thresholds=self.thresholds,
+            limits=self.limit_book,
+            view=self.view,
+            batches=self.batches,
+            gate=self.gate,
+            ids=self.ids,
+        )
+        for service in self._services.values():
+            service.context = self.context
 
     def advance_ticks(self, ticks: int = 1) -> int:
         """Move the deterministic clock forward and record where it went."""
@@ -468,6 +620,9 @@ class PlantRuntime:
                 number(payload, "value"),
                 optional_text(payload, "unit", ""),
                 ttl_ticks=optional_integer(payload, "ttl_ticks", self.config.defaults.baseline_ttl_ticks),
+            ),
+            "limits.publish": lambda payload: self.publish_limit(
+                text(payload, "category"), number(payload, "value")
             ),
             "confirmation.take": lambda payload: self.confirm(
                 text(payload, "subject"),

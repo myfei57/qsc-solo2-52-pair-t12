@@ -77,6 +77,33 @@ class PlantService:
         )
         return self.context.bus.publish(event)
 
+    def audit_verdict(self, reading: str, payload: Mapping[str, Any]) -> None:
+        """File the immutable verdict a reading produced.
+
+        The bus event carries the full version stamp (revision and effective
+        tick) alongside the reading, limit and outcome.  It is raised for
+        every judged reading, not only failures, so the audit ledger keeps a
+        durable decision row that can be re-explained with the exact bound
+        version applied at the time.
+        """
+
+        verdict = payload.get("verdict") if isinstance(payload, Mapping) else None
+        if not isinstance(verdict, Mapping) or verdict.get("revision") is None:
+            return
+        self.emit(
+            f"decision.{reading}",
+            {
+                "category": str(verdict.get("name", reading)),
+                "reading": verdict.get("reading"),
+                "limit": verdict.get("limit"),
+                "ok": bool(verdict.get("ok", False)),
+                "code": verdict.get("code"),
+                "revision": verdict.get("revision"),
+                "effective_tick": verdict.get("effective_tick"),
+                "evaluated_tick": verdict.get("evaluated_tick"),
+            },
+        )
+
     def require(self, action: str, *, required_phase: str | None = None, **extra: bool) -> GateResult:
         """Run the pre gate for ``action``."""
 

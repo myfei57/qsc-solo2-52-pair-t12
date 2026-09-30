@@ -30,9 +30,10 @@ def test_runloop_accumulates_strokes() -> None:
 
 
 def test_pressure_reading_uses_the_configured_ceiling(runtime: PlantRuntime) -> None:
-    reading = pressure_reading(thresholds=runtime.thresholds, reading_mpa=9.5)
+    reading = pressure_reading(limits=runtime.limit_book, reading_mpa=9.5, tick=0)
     assert reading.ok is False
     assert reading.code == "over_limit"
+    assert reading.verdict is not None and reading.verdict.revision == 1
 
 
 def test_pump_start_is_refused_without_a_prime(runtime: PlantRuntime) -> None:

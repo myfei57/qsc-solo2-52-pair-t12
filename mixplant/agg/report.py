@@ -18,6 +18,7 @@ def weight_report(reading: WeightReading, *, batch_id: str, version: int) -> dic
         "actual_kg": reading.actual_kg,
         "deviation_percent": reading.deviation_percent,
         "ok": reading.ok,
+        "limit_revision": None if reading.verdict is None else reading.verdict.revision,
     }
 
 
